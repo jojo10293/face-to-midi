@@ -1,0 +1,117 @@
+name: Build Face to MIDI
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build macOS app
+      run: |
+        pyinstaller --name "Face-to-MIDI" \
+                    --windowed \
+                    --onefile \
+                    --clean \
+                    --noconfirm \
+                    main.py
+    
+    - name: Create DMG (optional)
+      run: |
+        mkdir -p dist/dmg
+        cp -r "dist/Face-to-MIDI" dist/dmg/
+        # Note: For proper DMG creation, you'd need create-dmg
+        # brew install create-dmg
+        # create-dmg --volname "Face to MIDI" "Face-to-MIDI.dmg" dist/dmg/
+    
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Face-to-MIDI-macOS
+        path: dist/Face-to-MIDI
+        retention-days: 90
+
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build Windows executable
+      run: |
+        pyinstaller --name "Face-to-MIDI" `
+                    --windowed `
+                    --onefile `
+                    --clean `
+                    --noconfirm `
+                    main.py
+    
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Face-to-MIDI-Windows
+        path: dist/Face-to-MIDI.exe
+        retention-days: 90
+
+  create-release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Download macOS artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: Face-to-MIDI-macOS
+        path: ./macos
+    
+    - name: Download Windows artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: Face-to-MIDI-Windows
+        path: ./windows
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ./macos/Face-to-MIDI
+          ./windows/Face-to-MIDI.exe
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
