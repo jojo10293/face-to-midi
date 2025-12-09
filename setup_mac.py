@@ -5,6 +5,7 @@ Usage: python setup_mac.py py2app
 This will create a standalone macOS application bundle that includes:
 - All Python modules (face_tracker, midi_controller, config_manager, calibration_wizard)
 - All dependencies (OpenCV, MediaPipe, rtmidi, numpy, tkinter)
+- ALL MediaPipe model files (.binarypb, .tflite, etc.)
 - Documentation files
 - Default configuration
 
@@ -14,6 +15,31 @@ but we explicitly list them here to ensure they're found.
 
 from setuptools import setup
 import os
+import sys
+import site
+
+# Find MediaPipe data files
+def find_mediapipe_files():
+    """Find all MediaPipe model and data files"""
+    mediapipe_files = []
+    
+    # Get site-packages locations
+    site_packages = site.getsitepackages()
+    
+    for sp in site_packages:
+        mediapipe_path = os.path.join(sp, 'mediapipe')
+        if os.path.exists(mediapipe_path):
+            # Walk through mediapipe directory and find all data files
+            for root, dirs, files in os.walk(mediapipe_path):
+                for file in files:
+                    # Include model files and data files
+                    if file.endswith(('.binarypb', '.tflite', '.txt', '.task', '.pbtxt')):
+                        full_path = os.path.join(root, file)
+                        relative_path = os.path.relpath(full_path, sp)
+                        mediapipe_files.append(full_path)
+                        print(f"Found MediaPipe file: {relative_path}")
+    
+    return mediapipe_files
 
 # Main application entry point
 APP = ['main.py']
@@ -34,6 +60,13 @@ DATA_FILES = [
     'CALIBRATION_GUIDE.md',
     'requirements.txt'
 ]
+
+print("\n" + "="*60)
+print("Searching for MediaPipe model files...")
+print("="*60)
+mediapipe_data = find_mediapipe_files()
+print(f"\nFound {len(mediapipe_data)} MediaPipe data files")
+print("="*60 + "\n")
 
 # py2app build options
 OPTIONS = {
@@ -60,6 +93,9 @@ OPTIONS = {
         'tkinter.messagebox',
         'fcntl',         # Unix-specific (for rtmidi on macOS)
     ],
+    
+    # Include all MediaPipe data files
+    'resources': mediapipe_data,
     
     # Packages to exclude (reduce app size)
     'excludes': [
@@ -103,6 +139,7 @@ OPTIONS = {
     'optimize': 2,  # Optimize Python bytecode
     'compressed': True,  # Compress Python modules
     'semi_standalone': False,  # Include Python framework (fully standalone)
+    'site_packages': True,  # Include site-packages
 }
 
 setup(

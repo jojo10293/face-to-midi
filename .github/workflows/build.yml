@@ -30,11 +30,20 @@ jobs:
     
     - name: Build macOS app
       run: |
+        # Find MediaPipe data directory
+        MEDIAPIPE_PATH=$(python -c "import mediapipe; import os; print(os.path.dirname(mediapipe.__file__))")
+        echo "MediaPipe path: $MEDIAPIPE_PATH"
+        
+        # Build with PyInstaller, including MediaPipe data files
         pyinstaller --name "Face-to-MIDI" \
                     --windowed \
                     --onefile \
                     --clean \
                     --noconfirm \
+                    --add-data "${MEDIAPIPE_PATH}:mediapipe" \
+                    --hidden-import=mediapipe.python.solutions.face_mesh \
+                    --hidden-import=mediapipe.python.solutions.drawing_utils \
+                    --collect-all mediapipe \
                     main.py
     
     - name: Create DMG (optional)
@@ -72,11 +81,20 @@ jobs:
     
     - name: Build Windows executable
       run: |
+        # Find MediaPipe data directory
+        $MEDIAPIPE_PATH = python -c "import mediapipe; import os; print(os.path.dirname(mediapipe.__file__))"
+        Write-Host "MediaPipe path: $MEDIAPIPE_PATH"
+        
+        # Build with PyInstaller, including MediaPipe data files
         pyinstaller --name "Face-to-MIDI" `
                     --windowed `
                     --onefile `
                     --clean `
                     --noconfirm `
+                    --add-data "${MEDIAPIPE_PATH};mediapipe" `
+                    --hidden-import=mediapipe.python.solutions.face_mesh `
+                    --hidden-import=mediapipe.python.solutions.drawing_utils `
+                    --collect-all mediapipe `
                     main.py
     
     - name: Upload Windows artifact
