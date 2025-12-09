@@ -424,19 +424,52 @@ class FaceToMIDIApp:
                 loading.update()
                 
                 camera_config = self.config_manager.get_camera_config()
-                self.camera = cv2.VideoCapture(camera_config['device_id'])
+                
+                # Try different camera backends for M1 Mac compatibility
+                import platform
+                is_mac = platform.system() == 'Darwin'
+                
+                if is_mac:
+                    # On macOS (especially M1), try AVFoundation backend first
+                    status_label.config(text="Initializing camera (AVFoundation)...")
+                    loading.update()
+                    self.camera = cv2.VideoCapture(camera_config['device_id'], cv2.CAP_AVFOUNDATION)
+                else:
+                    self.camera = cv2.VideoCapture(camera_config['device_id'])
+                
+                # Wait a moment for camera to initialize
+                import time
+                time.sleep(0.5)
+                
+                if not self.camera.isOpened():
+                    # Try again without specifying backend
+                    status_label.config(text="Retrying camera initialization...")
+                    loading.update()
+                    self.camera = cv2.VideoCapture(camera_config['device_id'])
+                    time.sleep(0.5)
                 
                 if not self.camera.isOpened():
                     loading.destroy()
-                    messagebox.showerror("Error", "Failed to open camera!")
+                    messagebox.showerror("Camera Error", 
+                        "Failed to open camera!\n\n"
+                        "macOS Tips:\n"
+                        "1. Check System Settings → Privacy & Security → Camera\n"
+                        "2. Make sure 'Face to MIDI' has camera permission\n"
+                        "3. Try restarting the application\n"
+                        "4. Close other apps using the camera")
                     return
                 
                 status_label.config(text="Configuring camera...")
                 loading.update()
                 
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, camera_config['width'])
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_config['height'])
-                self.camera.set(cv2.CAP_PROP_FPS, camera_config['fps'])
+                # Set camera properties with error handling
+                try:
+                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, camera_config['width'])
+                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_config['height'])
+                    self.camera.set(cv2.CAP_PROP_FPS, camera_config['fps'])
+                except Exception as e:
+                    print(f"Warning: Could not set camera properties: {e}")
+                    # Continue anyway - camera will use default settings
                 
                 status_label.config(text="Starting face detection...")
                 loading.update()
@@ -454,7 +487,19 @@ class FaceToMIDIApp:
                 
             except Exception as e:
                 loading.destroy()
-                messagebox.showerror("Error", f"Failed to start tracking: {e}")
+                error_msg = str(e)
+                if "Unknown C++ exception" in error_msg:
+                    messagebox.showerror("Camera Error",
+                        f"OpenCV camera error on macOS!\n\n"
+                        f"This is often a permissions issue.\n\n"
+                        f"Try these steps:\n"
+                        f"1. Go to System Settings → Privacy & Security → Camera\n"
+                        f"2. Enable camera access for this app\n"
+                        f"3. Restart the application\n"
+                        f"4. If problem persists, restart your Mac\n\n"
+                        f"Technical error: {error_msg}")
+                else:
+                    messagebox.showerror("Error", f"Failed to start tracking: {e}")
         
         # Run initialization in background
         threading.Thread(target=init_tracking, daemon=True).start()
@@ -473,46 +518,96 @@ class FaceToMIDIApp:
         """Main camera processing loop"""
         self.last_head_pose = None
         neutral_offsets = self.config_manager.get_neutral_offsets()
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         
         while self.is_running:
-            ret, frame = self.camera.read()
-            if not ret:
-                break
-            
-            # Process frame
-            head_pose, annotated_frame = self.face_tracker.process_frame(frame)
-            
-            if head_pose:
-                # Apply neutral offsets to make calibrated position zero
-                adjusted_pose = {
-                    'pitch': head_pose['pitch'] - neutral_offsets.get('pitch', 0),
-                    'yaw': head_pose['yaw'] - neutral_offsets.get('yaw', 0),
-                    'roll': head_pose['roll'] - neutral_offsets.get('roll', 0)
-                }
+            try:
+                ret, frame = self.camera.read()
+                if not ret:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.root.after(0, lambda: messagebox.showerror("Camera Error", 
+                            "Lost connection to camera!\n\n"
+                            "The camera may be in use by another application."))
+                        self.root.after(0, self.stop_tracking)
+                        break
+                    continue
                 
-                self.last_head_pose = head_pose  # Keep raw pose for calibration
+                # Reset error counter on successful read
+                consecutive_errors = 0
                 
-                # Convert to MIDI (skip if debug mode)
-                if not self.debug_mode:
-                    midi_values = self.midi_controller.process_head_pose(
-                        adjusted_pose, 
-                        self.config_manager.config
-                    )
-                else:
-                    # In debug mode, just simulate MIDI values
-                    midi_values = {}
-                    for axis in ['pitch', 'yaw', 'roll']:
-                        if self.config_manager.config[axis]['enabled']:
-                            midi_values[axis] = self.midi_controller.map_value(
-                                adjusted_pose[axis],
-                                self.config_manager.config[axis]['input_min'],
-                                self.config_manager.config[axis]['input_max'],
-                                self.config_manager.config[axis]['output_min'],
-                                self.config_manager.config[axis]['output_max']
-                            )
+                # Process frame
+                head_pose, annotated_frame = self.face_tracker.process_frame(frame)
                 
-                # Update UI with adjusted values
-                self.root.after(0, self.update_value_display, adjusted_pose, midi_values)
+                if head_pose:
+                    # Apply neutral offsets to make calibrated position zero
+                    adjusted_pose = {
+                        'pitch': head_pose['pitch'] - neutral_offsets.get('pitch', 0),
+                        'yaw': head_pose['yaw'] - neutral_offsets.get('yaw', 0),
+                        'roll': head_pose['roll'] - neutral_offsets.get('roll', 0)
+                    }
+                    
+                    self.last_head_pose = head_pose  # Keep raw pose for calibration
+                    
+                    # Convert to MIDI (skip if debug mode)
+                    if not self.debug_mode:
+                        midi_values = self.midi_controller.process_head_pose(
+                            adjusted_pose, 
+                            self.config_manager.config
+                        )
+                    else:
+                        # In debug mode, just simulate MIDI values
+                        midi_values = {}
+                        for axis in ['pitch', 'yaw', 'roll']:
+                            if self.config_manager.config[axis]['enabled']:
+                                midi_values[axis] = self.midi_controller.map_value(
+                                    adjusted_pose[axis],
+                                    self.config_manager.config[axis]['input_min'],
+                                    self.config_manager.config[axis]['input_max'],
+                                    self.config_manager.config[axis]['output_min'],
+                                    self.config_manager.config[axis]['output_max']
+                                )
+                    
+                    # Update UI with adjusted values
+                    self.root.after(0, self.update_value_display, adjusted_pose, midi_values)
+                    
+            except cv2.error as e:
+                consecutive_errors += 1
+                error_msg = str(e)
+                print(f"OpenCV error in camera loop: {error_msg}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    self.root.after(0, lambda: messagebox.showerror("Camera Error",
+                        f"Repeated camera errors detected.\n\n"
+                        f"On macOS M1, this usually means:\n"
+                        f"1. Camera permissions are not properly granted\n"
+                        f"2. Another app is using the camera\n"
+                        f"3. System needs to be restarted\n\n"
+                        f"Technical error: {error_msg}"))
+                    self.root.after(0, self.stop_tracking)
+                    break
+                
+                # Brief pause before retrying
+                import time
+                time.sleep(0.1)
+                continue
+                
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"Unexpected error in camera loop: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    self.root.after(0, lambda: messagebox.showerror("Error",
+                        f"Camera loop stopped due to repeated errors:\n{e}"))
+                    self.root.after(0, self.stop_tracking)
+                    break
+                
+                import time
+                time.sleep(0.1)
+                continue
             
             # Show frame
             cv2.imshow('Face to MIDI - Press Q to close', annotated_frame)
